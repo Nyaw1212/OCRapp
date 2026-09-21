@@ -18,6 +18,8 @@ from PySide6.QtGui import QAction, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -44,6 +46,12 @@ def pil_to_pixmap(image: Image.Image) -> QPixmap:
 
 
 class MainWindow(QMainWindow):
+    # Same proven History Preview preset used by Leave Calendar.
+    DEFAULT_HISTORY_LEFT = 0
+    DEFAULT_HISTORY_WIDTH = 31
+    DEFAULT_MARK_LEFT = 85
+    DEFAULT_MARK_WIDTH = 18
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Leave Card OCR Extractor — Phase 1 (Local / Read-only)")
@@ -54,6 +62,7 @@ class MainWindow(QMainWindow):
         self.page_number = 0
         self.source_image: Image.Image | None = None
         self.zoom = 100
+        self.show_history_preview = False
 
         self._build_ui()
         self._create_menu()
@@ -78,6 +87,26 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.next_button)
         controls.addSpacing(18)
 
+        self.full_card_button = QPushButton("Full Card")
+        self.full_card_button.setCheckable(True)
+        self.full_card_button.setChecked(True)
+        self.full_card_button.clicked.connect(lambda: self.set_view(False))
+        controls.addWidget(self.full_card_button)
+        self.history_button = QPushButton("History Preview")
+        self.history_button.setCheckable(True)
+        self.history_button.setStyleSheet(
+            "QPushButton { background:#eab308; color:#1f2937; font-weight:800; }"
+            "QPushButton:hover { background:#facc15; }"
+        )
+        self.history_button.clicked.connect(lambda: self.set_view(True))
+        controls.addWidget(self.history_button)
+        self.adjust_crop_button = QPushButton("Adjust History Crop")
+        self.adjust_crop_button.setCheckable(True)
+        controls.addWidget(self.adjust_crop_button)
+        reset_crop_button = QPushButton("Reset Crop")
+        reset_crop_button.clicked.connect(self.reset_crop)
+        controls.addWidget(reset_crop_button)
+
         controls.addWidget(QLabel("Zoom:"))
         self.zoom_box = QSpinBox()
         self.zoom_box.setRange(25, 300)
@@ -92,6 +121,31 @@ class MainWindow(QMainWindow):
         self.ocr_button.clicked.connect(self.run_ocr)
         controls.addWidget(self.ocr_button)
         main_layout.addLayout(controls)
+
+        self.crop_group = QGroupBox("History Preview Crop · source file remains unchanged")
+        crop_layout = QGridLayout(self.crop_group)
+        self.history_left_box = self._crop_spinbox()
+        self.history_width_box = self._crop_spinbox()
+        self.mark_left_box = self._crop_spinbox()
+        for column, (caption, box) in enumerate(
+            (
+                ("History Left", self.history_left_box),
+                ("History Width", self.history_width_box),
+                ("VL/SL Left", self.mark_left_box),
+            )
+        ):
+            crop_layout.addWidget(QLabel(caption), 0, column)
+            crop_layout.addWidget(box, 1, column)
+        crop_note = QLabel(
+            "History Preview joins the left history section and the right VL/SL strip. "
+            "It changes only the on-screen working image used for OCR."
+        )
+        crop_note.setWordWrap(True)
+        crop_layout.addWidget(crop_note, 2, 0, 1, 3)
+        self.adjust_crop_button.toggled.connect(self.crop_group.setVisible)
+        self._apply_default_crop()
+        self.crop_group.hide()
+        main_layout.addWidget(self.crop_group)
 
         self.image_label = QLabel("Open a leave-card image or PDF to begin.")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -127,6 +181,33 @@ class MainWindow(QMainWindow):
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_file)
         self.menuBar().addMenu("File").addAction(open_action)
+
+    def _crop_spinbox(self) -> QSpinBox:
+        box = QSpinBox()
+        box.setRange(0, 100)
+        box.setSuffix("%")
+        box.valueChanged.connect(self._show_image)
+        return box
+
+    def _apply_default_crop(self) -> None:
+        for box, value in (
+            (self.history_left_box, self.DEFAULT_HISTORY_LEFT),
+            (self.history_width_box, self.DEFAULT_HISTORY_WIDTH),
+            (self.mark_left_box, self.DEFAULT_MARK_LEFT),
+        ):
+            box.blockSignals(True)
+            box.setValue(value)
+            box.blockSignals(False)
+
+    def reset_crop(self) -> None:
+        self._apply_default_crop()
+        self._show_image()
+
+    def set_view(self, history: bool) -> None:
+        self.show_history_preview = history
+        self.full_card_button.setChecked(not history)
+        self.history_button.setChecked(history)
+        self._show_image()
 
     def _update_controls(self) -> None:
         has_image = self.source_image is not None
@@ -192,7 +273,7 @@ class MainWindow(QMainWindow):
     def _show_image(self) -> None:
         if not self.source_image:
             return
-        pixmap = pil_to_pixmap(self.source_image)
+        pixmap = pil_to_pixmap(self._working_image())
         scaled = pixmap.scaled(
             int(pixmap.width() * self.zoom / 100),
             int(pixmap.height() * self.zoom / 100),
@@ -202,6 +283,27 @@ class MainWindow(QMainWindow):
         self.image_label.setPixmap(scaled)
         self.image_label.resize(scaled.size())
 
+    def _working_image(self) -> Image.Image:
+        """Return a display/OCR copy. The source image is never modified."""
+        assert self.source_image is not None
+        if not self.show_history_preview:
+            return self.source_image
+
+        image = self.source_image
+        width, height = image.size
+
+        def strip(left_percent: int, width_percent: int) -> Image.Image:
+            left = min(round(width * left_percent / 100), width - 1)
+            strip_width = min(max(1, round(width * width_percent / 100)), width - left)
+            return image.crop((left, 0, left + strip_width, height))
+
+        history = strip(self.history_left_box.value(), self.history_width_box.value())
+        markings = strip(self.mark_left_box.value(), self.DEFAULT_MARK_WIDTH)
+        joined = Image.new("RGB", (history.width + markings.width, height), "white")
+        joined.paste(history, (0, 0))
+        joined.paste(markings, (history.width, 0))
+        return joined
+
     def run_ocr(self) -> None:
         if not self.source_image:
             return
@@ -209,12 +311,15 @@ class MainWindow(QMainWindow):
             configured = os.environ.get("TESSERACT_CMD")
             if configured:
                 pytesseract.pytesseract.tesseract_cmd = configured
-            # Gentle preparation only in Phase 1; source_image itself is not changed.
-            working = ImageOps.grayscale(self.source_image)
+            # Gentle preparation only; the source image itself is not changed.
+            working = ImageOps.grayscale(self._working_image())
             working = ImageEnhance.Contrast(working).enhance(1.4)
             text = pytesseract.image_to_string(working, config="--psm 6")
             self.raw_text.setPlainText(text)
-            self.statusBar().showMessage("Local OCR completed. Raw text still needs human review.")
+            target = "History Preview" if self.show_history_preview else "Full Card"
+            self.statusBar().showMessage(
+                f"Local OCR completed for {target}. Raw text still needs human review."
+            )
         except pytesseract.TesseractNotFoundError:
             QMessageBox.warning(
                 self,

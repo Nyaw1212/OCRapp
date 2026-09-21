@@ -7,6 +7,7 @@ A local, read-only proof of concept for extracting text from scanned leave cards
 - Opens one local PDF or image (`PDF`, `PNG`, `JPG/JPEG`, `BMP`, `TIFF/TIF`).
 - Renders PDF pages locally and lets you move between them.
 - Displays the original page with zoom and scrollbars.
+- Includes Leave Calendar's adjustable History Preview crop (`0% / 31% / 85%` by default), joining the history area with its VL/SL strip for a focused local OCR test.
 - Runs Tesseract locally and displays raw text for review.
 - Copies raw text to the clipboard only when you choose **Copy Raw Text**.
 
